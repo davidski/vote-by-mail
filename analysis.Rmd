@@ -1,0 +1,106 @@
+---
+title: "Vote By Mail Analysis"
+author: "David F. Severski (@dseverski)"
+output:
+  html_notebook: 
+    theme: cerulean
+---
+
+Inspired by dinner-table speculation on what point in the 2016 election 
+cycle the actual vote outcome was determined (early voting, absentee votes, 
+states that close ahead of others, etc.), I was interested in looking at 
+rates of absentee voting in the US. My household have been permanent vote-by-mail 
+voters for years and it's hard for me to envision actually going to a polling 
+location. __[Whacky US Election Laws...*sigh*]--
+
+A quick web searched turned up [this](http://www.nytimes.com/interactive/2012/10/07/us/voting-by-mail.html) 
+graphic from the NYTimes, which referenced the US Election Assistance 
+Commission (EAC) as a data source.
+
+Data available at:  https://www.eac.gov/research/election_administration_and_voting_survey.aspx
+Code book: https://www.eac.gov/assets/1/Page/2014%20EAVS%20Data%20File%20Codebook-2015-06-24-V03-Final.pdf
+
+
+```{r setup}
+library(haven)      # for SPSS data file imports
+library(tidyverse)  # for data processing assistance
+library(viridis)    # for our color scheme
+```
+
+The EAC makes data available in several formats. The SPSS dataset looks to be 
+the most ammenable. Below we download the ZIP file, expand it, and read in 
+Section C data (absentee info).
+
+```{r fetch_data}
+url <- "https://www.eac.gov/assets/1/Page/2014_EAVS_SPSS_Files.zip"
+if (!file.exists(file.path("data", "2014_EAVS_SPSS_Files.zip"))) {
+  download.file(url, "data/2014_EAVS_SPSS_Files.zip")
+}
+unzip(file.path("data", "2014_EAVS_SPSS_Files.zip"), exdir = "data", overwrite = TRUE)
+dat <- haven::read_sav("data/EAVS_Section_C.sav")
+dat
+```
+
+```{r explore_data}
+#class(dat)
+dat %>% group_by(State) %>% summarize(total_absentee = sum(QC4_Total, na.rm = TRUE)) %>% 
+  arrange(desc(total_absentee))
+table(dat$QC2)
+dat %>% group_by(State, QC2) %>% tally
+```
+
+I'm curious on region trends. Combine the EAC data with the built in R datasets 
+on state regions.
+
+```{r enhance_with_regions}
+state_regions <- data_frame(state.name = state.name, state.abb = state.abb, region = as.character(state.region))
+data_with_regions <- left_join(dat, state_regions, by = c("State" = "state.abb"))
+data_with_regions %>% group_by(region) %>% tally(QC4_Total)
+```
+
+```{r get_total_voters}
+total_votes <- haven::read_sav("data/EAVS_Section_A.sav")
+total_votes_by_state <- group_by(total_votes, FIPSCode, PreferredOrder) %>% 
+  summarize(registered_voters = sum(QA1a, na.rm = TRUE))
+total_votes_by_state
+```
+
+
+```{r percentage_absentee}
+voters_absentee <- left_join(data_with_regions, total_votes_by_state)
+#dat2 <- group_by(voters_absentee, region, State, FIPSCode) %>% 
+dat2 <- group_by(voters_absentee, State, state.name) %>% 
+  summarize(percent_absentee = sum(QC4_Total, na.rm = TRUE) / sum(registered_voters) * 100) %>% 
+  arrange(desc(percent_absentee)) %>% 
+  filter(percent_absentee != Inf)
+dat2
+```
+
+The following graph could be greatly improved -- spatial analysis isn't my 
+forte. Immediate improvements include moving this down to the FIPS code 
+and improving the breaks (it's not clear that OR has a higher pct than either WA 
+or CO).
+
+```{r graph_it}
+state_map <- map_data("state")
+gg <- ggplot()
+gg <- gg + geom_map(data = state_map, map = state_map, 
+                    aes(long, lat, map_id = region))
+gg <- gg + geom_map(data = dat2, map = state_map,
+                    aes(fill = percent_absentee, 
+                        map_id = tolower(state.name)))
+#gg <- gg + scale_fill_continuous(low='thistle2', high='darkred',  guide='colorbar')
+gg <- gg + labs(title = "Percentage absentee voters vs. all registered voters by state",
+                caption = "Data: US EAC - 2014 General Election",
+                x = NULL, y = NULL,
+                fill = "Pct Absentee of Total")
+gg <- gg + coord_map("polyconic") 
+gg <- gg + theme_minimal() + theme(legend.position = "bottom")
+#gg <- gg + guide_legend(title = "Percent Absentee of Total")
+gg <- gg + scale_fill_viridis(alpha = 0.7, guide = guide_legend(position = "bottom", direction = "horizontal"))
+gg
+```
+
+There's a lot of great looking data in the EAC data. More exploration is 
+warranted!
+
